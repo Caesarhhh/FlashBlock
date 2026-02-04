@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlashBlock: Attention Caching for Efficient Long-Context Block Diffusion</title>
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']]
+            }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+
+<body>
+
+    <header class="container">
+        <h1>FlashBlock: Attention Caching for Efficient<br>Long-Context Block Diffusion</h1>
+
+        <div class="authors">
+            <div class="author-block">Zhuokun Chen<sup>1,*</sup></div>
+            <div class="author-block">Jianfei Cai<sup>1</sup></div>
+            <div class="author-block">Bohan Zhuang<sup>2</sup></div>
+        </div>
+
+        <div class="affiliations">
+            <div class="affil-block"><sup>1</sup>Monash University</div>
+            <div class="affil-block"><sup>2</sup>Zhejiang University</div>
+        </div>
+
+        <div class="links">
+            <a href="#" class="btn"><i class="fas fa-file-pdf icon"></i> Paper</a>
+            <a href="#" class="btn"><i class="fab fa-github icon"></i> Code</a>
+            <a href="#" class="btn"><i class="fas fa-database icon"></i> Data</a>
+            <!-- <a href="#bibtex" class="btn"><i class="fas fa-quote-right icon"></i> Cite</a> -->
+        </div>
+    </header>
+
+    <div class="container">
+
+        <section id="abstract">
+            <div class="abstract-content">
+                <h2>Abstract</h2>
+                <p>
+                    Generating long-form content, such as minute-long videos and extended texts, is increasingly
+                    important for modern generative models. Block diffusion improves inference efficiency via KV caching
+                    and block-wise causal inference and has been widely adopted in diffusion language models and video
+                    generation. However, in long-context settings, block diffusion still incurs substantial overhead
+                    from repeatedly computing attention over an ever-growing KV cache. We identify an underexplored
+                    property of block diffusion: cross-step redundancy of attention within a block. Our analysis shows
+                    that attention outputs from tokens outside the current block remain largely stable across diffusion
+                    steps, while block-internal attention varies significantly. Based on this observation, we propose
+                    <strong>FlashBlock</strong>, a cached block-external attention mechanism that reuses stable
+                    attention output, substantially reducing attention computation and KV cache access without modifying
+                    the diffusion process. Moreover, FlashBlock is orthogonal to sparse attention and can be combined as
+                    a complementary residual reuse strategy. When integrated, it substantially improves model accuracy
+                    under aggressive sparsification by offsetting much of the performance loss induced by sparsity.
+                    Experiments on diffusion language models and video generation demonstrate up to 1.44× higher token
+                    throughput and up to 1.6× reduction in attention time, with negligible impact on generation quality.
+                </p>
+            </div>
+        </section>
+
+        <section id="insight">
+            <h2>Cross-Step Redundancy in Block Diffusion</h2>
+            <p>
+                We empirically analyze attention behavior in block diffusion and find a clear separation:
+                <strong>Block-external attention</strong> (from tokens already generated) remains largely stable across
+                diffusion steps,
+                while <strong>Block-internal attention</strong> (tokens currently being denoised) varies significantly.
+            </p>
+            <figure>
+                <div style="display: flex; flex-direction: column; gap: 10px; align-items: center;">
+                    <img src="assets/images/a_out_l3.png" alt="Block-External Attention Stability"
+                        style="max-width: 90%;">
+                    <img src="assets/images/a_in_l3.png" alt="Block-Internal Attention Variability"
+                        style="max-width: 90%;">
+                </div>
+                <figcaption>
+                    <strong>Figure 1: Cross-step stability of block-external vs. block-internal attention.</strong>
+                    Top: Block-external attention ($A_{\mathrm{out}}$) shows high similarity across steps.
+                    Bottom: Block-internal attention ($A_{\mathrm{in}}$) varies substantially.
+                </figcaption>
+            </figure>
+        </section>
+
+        <section id="method">
+            <h2>Method: Block-External Attention Caching</h2>
+            <p>
+                Method overview. We explicitly decompose attention into block-internal and block-external components.
+                At the first diffusion step of a block, we compute and cache the
+                output ($A_{\mathrm{out}}$) and log-normalizer ($L_{\mathrm{out}}$) from block-external tokens. In
+                subsequent diffusion steps within the same block, we only recompute attention for the block-internal
+                tokens ($A_{\mathrm{in}}$), reusing the cached block-external statistics.on in log-space.
+            </p>
+            <figure>
+                <img src="assets/images/method.png" alt="FlashBlock Method Overview">
+                <figcaption>
+                    <strong>Figure 2: Overview of FlashBlock.</strong>
+                    We reuse cached block-external attention and only recompute block-internal attention, significantly
+                    reducing KV cache access and efficient computation.
+                </figcaption>
+            </figure>
+        </section>
+
+        <section id="results">
+            <h2>Experimental Results</h2>
+
+            <h3>Efficiency</h3>
+            <p>
+                FlashBlock consistently reduces per-step inference latency compared to the baseline, with the gap
+                widening as context length increases. Remarkably, as the context length grows, the rate of latency
+                increase is only half that of the original model, leading to a theoretical speedup upper bound of
+                roughly 2x.
+            </p>
+            <figure>
+                <!-- Assuming latency_sparsity3 corresponds to tau=2 or a representative one -->
+                <img src="assets/images/latency_sparsity3.png" alt="Latency Comparison" style="max-width: 60%;">
+                <figcaption>
+                    <strong>Figure 3: Per-step inference latency.</strong> Our method (orange) vs. Baseline (blue).
+                </figcaption>
+            </figure>
+
+            <h3>Mathematical Reasoning & Coding</h3>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Block Size</th>
+                            <th>TPS</th>
+                            <th>GSM8K</th>
+                            <th>MATH500</th>
+                            <th>AIME</th>
+                            <th>MBPP</th>
+                            <th>HumanEval</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Trado-8B-Thinking</td>
+                            <td>4</td>
+                            <td>312</td>
+                            <td>93.25</td>
+                            <td>86.00</td>
+                            <td>33.33</td>
+                            <td>25.60</td>
+                            <td>50.61</td>
+                        </tr>
+                        <tr style="background-color: #f0fdf4;">
+                            <td><strong>Trado-8B + FlashBlock</strong></td>
+                            <td>4</td>
+                            <td><strong>451</strong></td>
+                            <td>93.12</td>
+                            <td>85.80</td>
+                            <td>33.33</td>
+                            <td>33.60</td>
+                            <td>51.22</td>
+                        </tr>
+                        <tr>
+                            <td>Trado-8B-Thinking</td>
+                            <td>8</td>
+                            <td>532</td>
+                            <td>91.74</td>
+                            <td>82.00</td>
+                            <td>26.67</td>
+                            <td>29.00</td>
+                            <td>54.27</td>
+                        </tr>
+                        <tr style="background-color: #f0fdf4;">
+                            <td><strong>Trado-8B + FlashBlock</strong></td>
+                            <td>8</td>
+                            <td><strong>674</strong></td>
+                            <td>90.22</td>
+                            <td>81.80</td>
+                            <td>26.67</td>
+                            <td>32.00</td>
+                            <td>53.66</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Combination with Sparse Attention</h3>
+            <p>
+                FlashBlock is orthogonal to sparse attention. When combined, it significantly improves performance by
+                recovering information lost due to sparsification (Table 2 of paper).
+            </p>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th rowspan="2">Method</th>
+                            <th colspan="2">GSM8K</th>
+                            <th colspan="2">MATH500</th>
+                            <th colspan="2">HumanEval</th>
+                        </tr>
+                        <tr>
+                            <th>Acc.</th>
+                            <th>Δ</th>
+                            <th>Acc.</th>
+                            <th>Δ</th>
+                            <th>Pass@1</th>
+                            <th>Δ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>SparseD (d=20%)</td>
+                            <td>34.72</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+7.96</td>
+                            <td>39.40</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+7.40</td>
+                            <td>23.78</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+9.76</td>
+                        </tr>
+                        <tr style="background-color: #f0fdf4;">
+                            <td><strong>SparseD + Ours</strong></td>
+                            <td><strong>42.68</strong></td>
+                            <td><strong>46.80</strong></td>
+                            <td><strong>33.54</strong></td>
+                        </tr>
+                        <tr>
+                            <td>SparseD (d=30%)</td>
+                            <td>68.61</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+3.64</td>
+                            <td>59.20</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+5.40</td>
+                            <td>29.88</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+6.71</td>
+                        </tr>
+                        <tr style="background-color: #f0fdf4;">
+                            <td><strong>SparseD + Ours</strong></td>
+                            <td><strong>72.25</strong></td>
+                            <td><strong>64.60</strong></td>
+                            <td><strong>36.59</strong></td>
+                        </tr>
+                        <tr>
+                            <td>SparseD (d=40%)</td>
+                            <td>84.61</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+2.65</td>
+                            <td>66.20</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+3.20</td>
+                            <td>39.02</td>
+                            <td rowspan="2" style="color: #ef4444; font-weight: bold;">+5.49</td>
+                        </tr>
+                        <tr style="background-color: #f0fdf4;">
+                            <td><strong>SparseD + Ours</strong></td>
+                            <td><strong>87.26</strong></td>
+                            <td><strong>69.40</strong></td>
+                            <td><strong>44.51</strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Video Generation</h3>
+            <p>
+                Qualitative results show that FlashBlock maintains generation quality and temporal consistency while
+                improving efficiency.
+            </p>
+        </section>
+
+        <section id="demos">
+            <h2>Video Demos</h2>
+            <div class="category-title">Complex Landscape</div>
+            <div class="comparison-grid">
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/baseline/The camera begins in a vast grassland, where the lush green grass sways gently in the breeze, the air fresh, and the soft rustling of the leaves fills the space. As the camera move-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>The camera begins in a vast grassland, where the lush green grass sways gently in the
+                            breeze, the air fresh, and the soft rustling of the leaves fills the space. As the camera
+                            move</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/ours/The camera begins in a vast grassland, where the lush green grass sways gently in the breeze, the air fresh, and the soft rustling of the leaves fills the space. As the camera move-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>The camera begins in a vast grassland, where the lush green grass sways gently in the
+                            breeze, the air fresh, and the soft rustling of the leaves fills the space. As the camera
+                            move</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/baseline/The camera gently descends, passing through the layers of waves, entering the deep underwater world. The surrounding coral reefs are vibrant and colorful, with a variety of tropica-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>The camera gently descends, passing through the layers of waves, entering the deep
+                            underwater world. The surrounding coral reefs are vibrant and colorful, with a variety of
+                            tropica</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/ours/The camera gently descends, passing through the layers of waves, entering the deep underwater world. The surrounding coral reefs are vibrant and colorful, with a variety of tropica-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>The camera gently descends, passing through the layers of waves, entering the deep
+                            underwater world. The surrounding coral reefs are vibrant and colorful, with a variety of
+                            tropica</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/baseline/The camera moves through the vast expanse of the universe, where stars twinkle against the dark backdrop, the Milky Way arcing like a silver river across the sky. Nebulae slowly ro-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>The camera moves through the vast expanse of the universe, where stars twinkle against the
+                            dark backdrop, the Milky Way arcing like a silver river across the sky. Nebulae slowly ro
+                        </div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/ours/The camera moves through the vast expanse of the universe, where stars twinkle against the dark backdrop, the Milky Way arcing like a silver river across the sky. Nebulae slowly ro-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>The camera moves through the vast expanse of the universe, where stars twinkle against the
+                            dark backdrop, the Milky Way arcing like a silver river across the sky. Nebulae slowly ro
+                        </div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/baseline/The camera starts at a tranquil coastline, where the waves gently crash against the rocks, the salty sea breeze fills the air, and the atmosphere feels fresh and alive. As the came-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>The camera starts at a tranquil coastline, where the waves gently crash against the rocks,
+                            the salty sea breeze fills the air, and the atmosphere feels fresh and alive. As the came
+                        </div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Complex_Landscape/ours/The camera starts at a tranquil coastline, where the waves gently crash against the rocks, the salty sea breeze fills the air, and the atmosphere feels fresh and alive. As the came-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>The camera starts at a tranquil coastline, where the waves gently crash against the rocks,
+                            the salty sea breeze fills the air, and the atmosphere feels fresh and alive. As the came
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            <div class="category-title">Human Identity</div>
+            <div class="comparison-grid">
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/baseline/A man is dancing.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A man is dancing.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/ours/A man is dancing.-0.mp4" type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A man is dancing.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/baseline/A man is playing badminton.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A man is playing badminton.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/ours/A man is playing badminton.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A man is playing badminton.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/baseline/A man is playing ping-pong.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A man is playing ping-pong.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/ours/A man is playing ping-pong.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A man is playing ping-pong.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/baseline/A woman is playing basketball.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A woman is playing basketball.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Human_Identity/ours/A woman is playing basketball.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A woman is playing basketball.</div>
+                    </div>
+                </div>
+
+            </div>
+            <div class="category-title">Motion Rationality</div>
+            <div class="comparison-grid">
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Motion_Rationality/baseline/A person is drinking coffee from a cup.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A person is drinking coffee from a cup.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Motion_Rationality/ours/A person is drinking coffee from a cup.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A person is drinking coffee from a cup.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Motion_Rationality/baseline/A person is eating a slice of pizza.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A person is eating a slice of pizza.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Motion_Rationality/ours/A person is eating a slice of pizza.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A person is eating a slice of pizza.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Motion_Rationality/baseline/A person is eating hamburger.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A person is eating hamburger.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Motion_Rationality/ours/A person is eating hamburger.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A person is eating hamburger.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source
+                                src="demo/demo_videos/Motion_Rationality/baseline/A person is eating ice cream.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-baseline">Baseline</span>
+                        <div>A person is eating ice cream.</div>
+                    </div>
+                </div>
+
+
+                <div class="video-card">
+                    <div class="video-wrapper">
+                        <video controls preload="metadata">
+                            <source src="demo/demo_videos/Motion_Rationality/ours/A person is eating ice cream.-0.mp4"
+                                type="video/mp4">
+                            Your browser does not support the video tag.
+                        </video>
+                    </div>
+                    <div class="video-caption">
+                        <span class="badge badge-ours">Ours</span>
+                        <div>A person is eating ice cream.</div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!--
+        <section id="bibtex">
+            <h2>Citation</h2>
+            <pre>
+@article{chen2026flashblock,
+  title={FlashBlock: Attention Caching for Efficient Long-Context Block Diffusion},
+  author={Chen, Zhuokun and Cai, Jianfei and Zhuang, Bohan},
+  journal={ICML Submission},
+  year={2026}
+}
+            </pre>
+        </section>
+        -->
+
+    </div>
+
+    <footer>
+        <p>&copy; 2026 Zhuokun Chen, Jianfei Cai, Bohan Zhuang. <br>ICML 2026 Submission.</p>
+    </footer>
+
+</body>
+
+</html>
